@@ -28,7 +28,7 @@
 		</p>
 	</header>
 	<p>
-		A <strong>neural processing unit</strong> (<strong><abbr title="neural processing unit">NPU</a></strong>) is a type of <a href="/computer-hardware/">computer hardware</a> (sometimes called an “<em> AI accelerator</em>” and a “<em>deep learning processo</em>”) that is specialized for <a href="/machine-learning/">machine learning</a> (<abbr title="machine learning">ML</abbr>) and <a href="/artificial-intelligence/">artificial intelligence</a> (<abbr title="artificial intelligence">artificial intelligence</abbr>) applications.
+		A <strong>neural processing unit</strong> (<strong><abbr title="neural processing unit">NPU</a></strong>) is a type of <a href="/computer-hardware/">computer hardware</a> (sometimes called an “<em>AI accelerator</em>” and a “<em>deep learning processor</em>”) that is specialized for <a href="/machine-learning/">machine learning</a> (<abbr title="machine learning">ML</abbr>) and <a href="/artificial-intelligence/">artificial intelligence</a> (<abbr title="artificial intelligence">artificial intelligence</abbr>) applications.
 	</p>
 	<p>
 		For example, an <strong><abbr title="neural processing unit">NPU</a></strong> can run an <a href="/artificial-neural-network/">artificial neural network</a> (<abbr title="artificial neural network">ANN</abbr>) better than a <abbr title="graphics processing unit)">GPU</abbr> or a <abbr title="central processing unit)">CPU</abbr>.
@@ -36,6 +36,167 @@
 	<p>
 		An <strong><abbr title="neural processing unit">NPU</a></strong> might be a separate part (similar to <em>math coprocessors</em> decades ago) or could be part of the <abbr title="graphics processing unit)">GPU</abbr> or <abbr title="central processing unit)">CPU</abbr>.
 	</p>
+	<section>
+		<h1><abbr title="neural processing unit">NPU</a> Hello World</h1>
+		<p>
+			A basic "hello world!" style program for AMD's <abbr title="neural processing unit">NPU</a> would be something simialr to:
+		</p>
+		<figure>
+			<pre><code>
+package main
+
+import (
+	"fmt"
+	"os"
+
+	ort "github.com/yalue/onnxruntime_go"
+)
+
+// inferONNXShareLibraryPath returns the path to the ONNX shared library.
+func inferONNXShareLibraryPath() (string, bool) {
+	switch runtime.GOOS {
+	case "linux":
+		return "/usr/lib/libonnxruntime.so", true
+	case "windows":
+		return "./onnxruntime.dll", true
+	default:
+		return "", false
+	}
+}
+
+func configureNPU(options *ort.SessionOptions) error {
+	// Detect the OS at runtime
+	switch runtime.GOOS {
+	case "linux":
+		fmt.Println("Cross-platform init: Configuring for Linux (Vitis AI)...")
+		vitisOptions := map[string]string{
+			"config_file": "/opt/amd-vitis-ai/vaip_config.json",
+		}
+		err := options.AppendExecutionProviderVitisAI(vitisOptions)
+		if nil != err {
+			// Fallback to QNN if Vitis AI isn't present
+			qnnOptions := map[string]string{"backend_path": "libQnnAic.so"}
+			_ = options.AppendExecutionProviderQNN(qnnOptions)
+		}
+		return nil
+
+	case "windows":
+		fmt.Println("Cross-platform init: Configuring for Windows (DirectML)...")
+		err := options.AppendExecutionProviderDirectML(0)
+		if err != nil {
+			return fmt.Errorf("failed to setup DirectML on Windows: %w", err))
+		}
+
+	default:
+		return fmt.Errorf("operating system %s is not supported for NPU acceleration.", runtime.GOOS)
+	}
+}
+
+
+func main() {
+	// 1. Point to the shared library.
+	// On Linux it is a ".so" file.
+	// On MS Windows it is a ".dll" file.
+
+	{
+		path, found := inferONNXShareLibraryPath()
+		if !found {
+			fmt.Fprintf(os.Stderr, "failed to infer path to ONNX (Open Neural Network Exchange) shared library.\n")
+			os.Exit(1)
+		}
+
+		ort.SetSharedLibraryPath(path)
+	}
+
+	// 2. Initialize the underlying hardware environment
+
+	{
+		err := ort.InitializeEnvironment()
+		if nil != err {
+			fmt.Fprintf(os.Stderr, "failed to initialize ONNX: %v\n", err)
+			os.Exit(1)
+		}
+		defer ort.DestroyEnvironment()
+	}
+
+	// 3. Configure Session Options to FORCE the NPU execution provider
+
+	var options *org.SessionOptions
+	{
+		var err error
+		options, err = ort.NewSessionOptions()
+		if nil != err {
+			fmt.Fprintf(os.Stderr, "failed to create new ONNX session options: %v\n", err)
+			os.Exit(1)
+		}
+		defer options.Destroy()
+	}
+
+	// 4. Call our OS-specific configuration logic.
+
+	{
+		err := configureNPU(options)
+		if nil != err {
+			fmt.Fprintf(os.Stderr, "failed to configure NPU: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	// =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=- //
+
+	// A. Prepare mock "Hello World" style mathematical data
+	//
+	// Here we are creating a 1×5 tensor — i.e., a 5D vector.
+
+	inputData := []float32{1.0, 2.0, 3.0, 4.0, 5.0}
+	inputShape := ort.NewShape(1, 5)
+
+	inputTensor, err := ort.NewTensor(inputShape, inputData)
+	if nil != err {
+		fmt.Fprintf(os.Stderr, "failed to create tensor for input: %v\n", err)
+		os.Exit(1)
+	}
+	defer inputTensor.Destroy()
+
+	outputShape := ort.NewShape(1, 5)
+	outputTensor, err := ort.NewEmptyTensor[float32](outputShape)
+	if nil != err {
+		fmt.Fprintf(os.Stderr, "failed to create tensor for output: %v\n", err)
+		os.Exit(1)
+	}
+	defer outputTensor.Destroy()
+
+	// B. Create the session and compile the model graph onto the NPU.
+
+	session, err := ort.NewAdvancedSession(
+		"multiply_by_two.onnx",
+		[]string{"X"},
+		[]string{"Y"},
+		[]ort.Value{inputTensor},
+		[]ort.Value{outputTensor},
+		options,
+	)
+	if nil != err {
+		fmt.Fprintf(os.Stderr, "failed to create session: %v\n", err)
+		os.Exit(1)
+	}
+	defer session.Destroy()
+
+	// C. Fire the tensors directly into the amdxdna.ko kernel driver
+	err = session.Run()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to run session: %v\n", err)
+		os.Exit(1)
+	}
+
+	// D. Success
+	fmt.Println("--- NPU Execution Success! ---")
+	fmt.Printf("Input Array:  %v\n", inputData)
+	fmt.Printf("NPU Output:   %v\n", outputTensor.GetData())
+}
+			</code></pre>
+		</figure>
+	</section>
 	<footer>
 		<include src="author.html"></include>
 		<include src="license.html"></include>
